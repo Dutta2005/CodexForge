@@ -63,3 +63,43 @@ docker compose up --build
 - `backend/` FastAPI application, database schema initialization, and Socket.IO server.
 - `sample-repository/` local fixture for import and analysis tests.
 - `__tests__/` unit tests for critical domain fixtures.
+
+
+## GitHub OAuth URL settings
+
+There are two `.env.example` files because the Next.js frontend and FastAPI backend run as separate services. Use the root `.env.example` for local frontend/Vercel values and `backend/.env.example` for backend host values.
+
+When creating a GitHub OAuth App, use these URLs:
+
+### Local development
+
+- **Homepage URL**: `http://localhost:3000`
+- **Authorization callback URL**: `http://localhost:8000/api/auth/github/callback`
+
+### Production
+
+- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge-raj.vercel.app`
+- **Authorization callback URL**: your deployed backend URL plus `/api/auth/github/callback`, for example `https://codexforge-backend.onrender.com/api/auth/github/callback`
+
+Set the same production callback URL as `GITHUB_OAUTH_CALLBACK_URL` on the backend host. Set `CLIENT_ORIGIN` to the Vercel frontend URL so CORS and Socket.IO accept browser requests.
+
+## Deploying the backend for free
+
+The frontend is configured for Vercel, but the FastAPI backend needs its own host. The repo includes `render.yaml` for Render's free web-service tier.
+
+### Render backend steps
+
+1. Create a Render account and choose **New > Blueprint**.
+2. Connect this GitHub repository and select `render.yaml`.
+3. Add these environment variables in Render:
+   - `DB_URI`: your hosted PostgreSQL connection string, such as a Neon pooled URL.
+   - `CLIENT_ORIGIN`: your deployed Vercel frontend URL, for example `https://your-app.vercel.app`.
+   - `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`: from a GitHub OAuth App.
+   - `CODEX_API_KEY`: from your AI/Codex provider dashboard.
+4. Deploy the service and copy the Render URL, for example `https://codexforge-backend.onrender.com`.
+5. In Vercel, set:
+   - `NEXT_PUBLIC_API_URL=https://codexforge-backend.onrender.com`
+   - `NEXT_PUBLIC_SOCKET_URL=https://codexforge-backend.onrender.com`
+6. Redeploy the Vercel frontend.
+
+Never commit real database URLs or API secrets. Keep those values in the hosting provider's environment variable UI.
