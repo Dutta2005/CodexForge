@@ -78,7 +78,7 @@ When creating a GitHub OAuth App, use these URLs:
 
 ### Production
 
-- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge.vercel.app`
+- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge-raj.vercel.app`
 - **Authorization callback URL**: your deployed backend URL plus `/api/auth/github/callback`, for example `https://codexforge-backend.onrender.com/api/auth/github/callback`
 
 Set the same production callback URL as `GITHUB_OAUTH_CALLBACK_URL` on the backend host. Set `CLIENT_ORIGIN` to the Vercel frontend URL so CORS and Socket.IO accept browser requests.
