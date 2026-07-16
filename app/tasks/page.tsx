@@ -5,7 +5,6 @@ import { io, type Socket } from 'socket.io-client';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { api, type BackendRepository, type BackendTask } from '@/lib/api';
-import { taskRuns } from '@/lib/mock-data';
 import { WorkspaceShell } from '@/components/workspace/shell';
 
 const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
@@ -61,7 +60,7 @@ export default function Tasks() {
       setLogs(['Submitting task to backend...']);
       const createdTask = await api.createTask(repoId || repositories[0]?.id || 'repo_1', prompt);
       setTask(createdTask);
-      setLogs((current) => [...current, `Backend returned ${createdTask.status}: ${createdTask.commitMessage}`]);
+      setLogs((current) => [...current, `Backend returned ${createdTask.status}: ${createdTask.title}`]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Task failed');
     } finally {
@@ -96,9 +95,9 @@ export default function Tasks() {
           />
           <Button disabled={running || !prompt} onClick={runTask}>{running ? 'Running...' : 'Analyze & execute'}</Button>
 
-          <h2 className="mt-6 font-semibold">Editable plan template</h2>
+          <h2 className="mt-6 font-semibold">Backend plan</h2>
           <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-slate-300">
-            {taskRuns[0].plan.map((step) => <li key={step}>{step}</li>)}
+            {(task?.plan ?? ['Submit a task to generate the backend plan.']).map((step) => <li key={step}>{step}</li>)}
           </ol>
           {error && <p className="mt-3 rounded-xl border border-rose-400/30 bg-rose-400/10 p-3 text-sm text-rose-200">{error}</p>}
         </Card>

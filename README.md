@@ -120,17 +120,12 @@ After Render creates the service, update `GITHUB_OAUTH_CALLBACK_URL` to `https:/
 
 Never commit real database URLs or API secrets. Keep those values in the hosting provider's environment variable UI.
 
-## What is real vs mocked right now
+## No mock-data policy
 
-CodexForge now has two frontend modes:
+The primary product flows should use backend APIs, not frontend fixtures:
 
-- **Real backend checks**: `/repositories` calls `GET /api/health`, `GET /api/repositories`, and `POST /api/repositories/import` on the FastAPI backend configured by `NEXT_PUBLIC_API_URL`.
-- **Real task submission and streaming**: `/tasks` loads repositories from the backend, submits tasks to `POST /api/tasks`, and listens for Socket.IO `task:log` events from `NEXT_PUBLIC_SOCKET_URL`.
-- **Mock/demo data remains**: dashboard statistics, architecture graph details, generated plans, and diff examples are still fixtures until deeper repository indexing and Codex execution workers are implemented.
+- Repository import clones a real Git repository with GitPython and persists analysis in the configured database.
+- Dashboard, history, architecture, repositories, and tasks read from FastAPI endpoints.
+- Task creation records backend state and refuses to claim autonomous Codex execution when `CODEX_API_KEY` is missing.
 
-To check the real pieces locally:
-
-1. Start the backend with `npm run backend:dev`.
-2. Start the frontend with `npm run dev`.
-3. Open `/repositories`, verify the backend status badge, and import a repo URL.
-4. Open `/tasks`, select the imported repository, submit a task, and watch live Socket.IO logs.
+Remaining static text in the UI is explanatory copy only, not fake persisted product state.
