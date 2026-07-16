@@ -1,0 +1,2 @@
+import { WorkspaceShell } from '@/components/workspace/shell';import { Card } from '@/components/ui/card';import { Button } from '@/components/ui/button';
+export default function Login(){return <WorkspaceShell><div className="mx-auto max-w-md py-20"><Card><h1 className="text-2xl font-semibold">Sign in with GitHub</h1><p className="mt-3 text-slate-400">OAuth connects repositories, issues, branches, commits, and pull request generation while preserving your session.</p><Button className="mt-6 w-full">Continue with GitHub</Button></Card></div></WorkspaceShell>}
