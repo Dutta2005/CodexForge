@@ -1,0 +1,1 @@
+{"name":"sample-repository","scripts":{"test":"vitest"},"dependencies":{"react":"latest"},"devDependencies":{"vitest":"latest","typescript":"latest"}}
