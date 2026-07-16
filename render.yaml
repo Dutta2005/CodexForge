@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: codexforge-backend
+    runtime: docker
+    plan: free
+    rootDir: backend
+    healthCheckPath: /api/health
+    envVars:
+      - key: DB_URI
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: CODEX_API_KEY
+        sync: false
+      - key: WORKSPACE_ROOT
+        value: /data/repos
