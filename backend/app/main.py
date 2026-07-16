@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Iterator, Sequence
 from urllib.parse import urlparse
 
+import httpx
 import socketio
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -87,8 +89,11 @@ def add_column_if_missing(conn: object, table: str, column: str, definition: str
     try:
         execute(conn, f'alter table {table} add column {column} {definition}')
     except Exception:
-        # Column already exists on SQLite/Postgres; keeping this migration idempotent.
-        pass
+        # PostgreSQL aborts the current transaction after any SQL error, even if Python catches it.
+        # Roll back so later migration statements can continue safely.
+        rollback = getattr(conn, 'rollback', None)
+        if rollback:
+            rollback()
 
 
 def init_db() -> None:
@@ -181,6 +186,27 @@ def startup() -> None:
     init_db()
 
 
+
+@app.get('/')
+def root() -> dict[str, str]:
+    return {'name': 'CodexForge API', 'status': 'ok'}
+
+
+@app.head('/')
+def root_head() -> dict[str, str]:
+    return {'status': 'ok'}
+
+
+@app.get('/api/auth/github/login')
+def github_login() -> RedirectResponse:
+    client_id = os.getenv('GITHUB_CLIENT_ID')
+    callback_url = os.getenv('GITHUB_OAUTH_CALLBACK_URL') or f'{CLIENT_ORIGIN}/api/auth/github/callback'
+    if not client_id:
+        raise HTTPException(status_code=500, detail='GITHUB_CLIENT_ID is not configured')
+    url = f'https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={callback_url}&scope=repo%20read:user%20user:email'
+    return RedirectResponse(url)
+
+
 @app.get('/api/health')
 def health() -> dict[str, object]:
     return {'status': 'ok', 'database': 'postgres' if is_postgres() else 'sqlite', 'workspaceRoot': str(WORKSPACE_ROOT), 'codexConfigured': bool(CODEX_API_KEY)}
@@ -193,8 +219,31 @@ def github_session() -> dict[str, object]:
 
 
 @app.get('/api/auth/github/callback')
-def github_callback(code: str | None = None) -> dict[str, object]:
-    return {'status': 'received', 'provider': 'github', 'hasCode': bool(code)}
+def github_callback(code: str | None = None) -> RedirectResponse:
+    if not code:
+        raise HTTPException(status_code=400, detail='Missing GitHub OAuth code')
+    client_id = os.getenv('GITHUB_CLIENT_ID')
+    client_secret = os.getenv('GITHUB_CLIENT_SECRET')
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail='GitHub OAuth environment variables are not configured')
+    token_response = httpx.post(
+        'https://github.com/login/oauth/access_token',
+        json={'client_id': client_id, 'client_secret': client_secret, 'code': code},
+        headers={'Accept': 'application/json'},
+        timeout=15,
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json().get('access_token')
+    if not access_token:
+        raise HTTPException(status_code=400, detail='GitHub did not return an access token')
+    user_response = httpx.get(
+        'https://api.github.com/user',
+        headers={'Authorization': f'Bearer {access_token}', 'Accept': 'application/vnd.github+json'},
+        timeout=15,
+    )
+    user_response.raise_for_status()
+    login = user_response.json().get('login', 'github-user')
+    return RedirectResponse(f'{CLIENT_ORIGIN}/dashboard?github=connected&login={login}')
 
 
 @app.post('/api/repositories/import')
