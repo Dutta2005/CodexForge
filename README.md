@@ -78,7 +78,7 @@ When creating a GitHub OAuth App, use these URLs:
 
 ### Production
 
-- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge-raj.vercel.app`
+- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge.vercel.app`
 - **Authorization callback URL**: your deployed backend URL plus `/api/auth/github/callback`, for example `https://codexforge-backend.onrender.com/api/auth/github/callback`
 
 Set the same production callback URL as `GITHUB_OAUTH_CALLBACK_URL` on the backend host. Set `CLIENT_ORIGIN` to the Vercel frontend URL so CORS and Socket.IO accept browser requests.
@@ -119,3 +119,18 @@ After Render creates the service, update `GITHUB_OAUTH_CALLBACK_URL` to `https:/
 6. Redeploy the Vercel frontend.
 
 Never commit real database URLs or API secrets. Keep those values in the hosting provider's environment variable UI.
+
+## What is real vs mocked right now
+
+CodexForge now has two frontend modes:
+
+- **Real backend checks**: `/repositories` calls `GET /api/health`, `GET /api/repositories`, and `POST /api/repositories/import` on the FastAPI backend configured by `NEXT_PUBLIC_API_URL`.
+- **Real task submission and streaming**: `/tasks` loads repositories from the backend, submits tasks to `POST /api/tasks`, and listens for Socket.IO `task:log` events from `NEXT_PUBLIC_SOCKET_URL`.
+- **Mock/demo data remains**: dashboard statistics, architecture graph details, generated plans, and diff examples are still fixtures until deeper repository indexing and Codex execution workers are implemented.
+
+To check the real pieces locally:
+
+1. Start the backend with `npm run backend:dev`.
+2. Start the frontend with `npm run dev`.
+3. Open `/repositories`, verify the backend status badge, and import a repo URL.
+4. Open `/tasks`, select the imported repository, submit a task, and watch live Socket.IO logs.
