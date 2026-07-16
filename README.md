@@ -87,6 +87,22 @@ Set the same production callback URL as `GITHUB_OAUTH_CALLBACK_URL` on the backe
 
 The frontend is configured for Vercel, but the FastAPI backend needs its own host. The repo includes `render.yaml` for Render's free web-service tier.
 
+
+### Manual Render deploy settings
+
+If Render Blueprints are unavailable on your plan, create a regular **New > Web Service** and use these settings:
+
+- **Source**: `https://github.com/Dutta2005/CodexForge`
+- **Branch**: `main`
+- **Runtime / Language**: Docker
+- **Root directory**: `backend`
+- **Dockerfile path**: `Dockerfile` because the root directory is already `backend`
+- **Health check path**: `/api/health`
+- **Instance type**: Free
+- **Environment variables**: add `DB_URI`, `CLIENT_ORIGIN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `CODEX_API_KEY`, and `WORKSPACE_ROOT` in Render's Environment tab.
+
+After Render creates the service, update `GITHUB_OAUTH_CALLBACK_URL` to `https://YOUR_RENDER_SERVICE.onrender.com/api/auth/github/callback` and update the GitHub OAuth App callback URL to the same value.
+
 ### Render backend steps
 
 1. Create a Render account and choose **New > Blueprint**.
