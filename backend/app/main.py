@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -71,9 +72,12 @@ class TaskRequest(BaseModel):
     prompt: str
 
 
+_IS_POSTGRES = DATABASE_URL.startswith(('postgres://', 'postgresql://'))
 def is_postgres() -> bool:
-    return DATABASE_URL.startswith(('postgres://', 'postgresql://'))
+    return _IS_POSTGRES
 
+
+_local = threading.local()
 
 @contextmanager
 def connection() -> Iterator[object]:
@@ -86,8 +90,18 @@ def connection() -> Iterator[object]:
 
     sqlite_path = Path(DATABASE_URL)
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(sqlite_path) as conn:
-        yield conn
+    
+    if not hasattr(_local, "sqlite_conn"):
+        # check_same_thread=False since we are using connection per thread, but 
+        # sometimes asyncio to_thread might reuse thread. It's safe since sqlite handles it.
+        _local.sqlite_conn = sqlite3.connect(sqlite_path, check_same_thread=False)
+    
+    try:
+        yield _local.sqlite_conn
+        _local.sqlite_conn.commit()
+    except Exception:
+        _local.sqlite_conn.rollback()
+        raise
 
 
 def execute(conn: object, sql: str, params: Sequence[object] = ()) -> None:
@@ -110,15 +124,10 @@ def fetch_one(conn: object, sql: str, params: Sequence[object] = ()) -> tuple | 
 def add_column_if_missing(conn: object, table: str, column: str, definition: str) -> None:
     try:
         if is_postgres():
-            # PostgreSQL supports IF NOT EXISTS — avoids errors that abort the
-            # current transaction and roll back earlier successful DDL in the
-            # same transaction.
             execute(conn, f'alter table {table} add column if not exists {column} {definition}')
         else:
             execute(conn, f'alter table {table} add column {column} {definition}')
     except Exception:
-        # PostgreSQL aborts the current transaction after any SQL error, even if Python catches it.
-        # Roll back so later migration statements can continue safely.
         rollback = getattr(conn, 'rollback', None)
         if rollback:
             rollback()
@@ -150,7 +159,7 @@ def repo_name_from_url(url: str) -> str:
 
 def detect_language(path: Path) -> str | None:
     return {
-        '.ts': 'TypeScript', '.tsx': 'TypeScript', '.js': 'JavaScript', '.jsx': 'JavaScript',
+        '.ts': 'TypeScript', '.tsx': 'TypeScript', '.js': 'JavaScript', '.jsx': 'JavaScript', '.prisma': 'Prisma',
         '.py': 'Python', '.go': 'Go', '.rs': 'Rust', '.java': 'Java', '.rb': 'Ruby', '.php': 'PHP',
         '.cs': 'C#', '.sql': 'SQL', '.css': 'CSS', '.html': 'HTML', '.md': 'Markdown'
     }.get(path.suffix)
@@ -159,42 +168,80 @@ def detect_language(path: Path) -> str | None:
 def analyze_repository(local_path: Path) -> dict[str, object]:
     languages: set[str] = set()
     dependencies: set[str] = set()
-    framework = 'Unknown'
-    package_json = local_path / 'package.json'
-    requirements = local_path / 'requirements.txt'
-    pyproject = local_path / 'pyproject.toml'
+    frameworks: set[str] = set()
+    
+    package_jsons = []
+    requirements_txts = []
+    pyproject_tomls = []
 
     for file_path in local_path.rglob('*'):
-        if '.git' in file_path.parts or file_path.is_dir():
+        if '.git' in file_path.parts or 'node_modules' in file_path.parts or 'venv' in file_path.parts or file_path.is_dir():
             continue
+            
         language = detect_language(file_path)
         if language:
             languages.add(language)
+            
+        if file_path.name == 'package.json':
+            package_jsons.append(file_path)
+        elif file_path.name in ('requirements.txt', 'requirements.in'):
+            requirements_txts.append(file_path)
+        elif file_path.name == 'pyproject.toml':
+            pyproject_tomls.append(file_path)
 
-    if package_json.exists():
-        package = json.loads(package_json.read_text(errors='ignore'))
-        for section in ('dependencies', 'devDependencies'):
-            dependencies.update((package.get(section) or {}).keys())
-        if 'next' in dependencies:
-            framework = 'Next.js'
-        elif 'vite' in dependencies:
-            framework = 'Vite'
-        elif 'react' in dependencies:
-            framework = 'React'
+    for package_json in package_jsons:
+        try:
+            package = json.loads(package_json.read_text(errors='ignore'))
+            for section in ('dependencies', 'devDependencies'):
+                deps = package.get(section) or {}
+                dependencies.update(deps.keys())
+        except Exception:
+            pass
 
-    if requirements.exists():
-        for line in requirements.read_text(errors='ignore').splitlines():
-            line = line.strip()
-            if line and not line.startswith('#'):
-                dependencies.add(line.split('==')[0].split('>=')[0])
-        if 'fastapi' in dependencies:
-            framework = f'{framework} + FastAPI' if framework != 'Unknown' else 'FastAPI'
+    for requirements in requirements_txts:
+        try:
+            for line in requirements.read_text(errors='ignore').splitlines():
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    dep = line.split('==')[0].split('>=')[0].split('<=')[0].split('~=')[0].strip()
+                    if dep:
+                        dependencies.add(dep)
+        except Exception:
+            pass
 
-    if pyproject.exists():
-        dependencies.add('pyproject.toml')
-        languages.add('Python')
+    for pyproject in pyproject_tomls:
+        try:
+            dependencies.add('pyproject.toml')
+            languages.add('Python')
+        except Exception:
+            pass
 
+    if 'next' in dependencies:
+        frameworks.add('Next.js')
+    elif 'vite' in dependencies:
+        frameworks.add('Vite')
+    elif 'react' in dependencies:
+        frameworks.add('React')
+        
+    if 'fastapi' in dependencies:
+        frameworks.add('FastAPI')
+    elif 'flask' in dependencies:
+        frameworks.add('Flask')
+    elif 'django' in dependencies:
+        frameworks.add('Django')
+        
+    if 'express' in dependencies:
+        frameworks.add('Express')
+    elif 'fastify' in dependencies:
+        frameworks.add('Fastify')
+    elif 'hono' in dependencies:
+        frameworks.add('Hono')
+    elif 'nestjs' in dependencies or '@nestjs/core' in dependencies:
+        frameworks.add('NestJS')
+
+    framework = ' + '.join(sorted(frameworks)) if frameworks else 'Unknown'
     summary = f'Detected {framework} repository with {len(languages)} languages and {len(dependencies)} dependencies.'
+    
     return {'framework': framework, 'languages': sorted(languages), 'dependencies': sorted(dependencies), 'summary': summary}
 
 
@@ -215,7 +262,7 @@ def task_to_dict(row: tuple) -> dict[str, object]:
 
 @app.on_event('startup')
 async def startup() -> None:
-    init_db()
+    await asyncio.to_thread(init_db)
     if CODEX_API_KEY:
         worker = TaskWorker(
             sio=sio,
@@ -226,7 +273,6 @@ async def startup() -> None:
         logger.info('Background task worker started')
     else:
         logger.warning('CODEX_API_KEY not set — background task worker will NOT start')
-
 
 
 @app.get('/')
@@ -248,6 +294,20 @@ def github_login() -> RedirectResponse:
     url = f'https://github.com/login/oauth/authorize?client_id={client_id}&redirect_uri={callback_url}&scope=repo%20read:user%20user:email'
     return RedirectResponse(url)
 
+@app.get('/api/auth/me')
+def auth_me() -> dict[str, object] | None:
+    with connection() as conn:
+        row = fetch_one(conn, 'select github_login, avatar_url from users order by updated_at desc limit 1')
+        if row:
+            return {'login': row[0], 'avatar_url': row[1]}
+    return None
+
+@app.post('/api/auth/logout')
+def auth_logout() -> dict[str, str]:
+    with connection() as conn:
+        execute(conn, 'delete from users')
+    return {'status': 'ok'}
+
 
 @app.get('/api/health')
 def health() -> dict[str, object]:
@@ -260,14 +320,12 @@ def github_session() -> dict[str, object]:
     return {'configured': bool(client_id), 'loginUrl': f'https://github.com/login/oauth/authorize?client_id={client_id}' if client_id else None}
 
 
-@app.get('/api/auth/github/callback')
-def github_callback(code: str | None = None) -> RedirectResponse:
-    if not code:
-        raise HTTPException(status_code=400, detail='Missing GitHub OAuth code')
+def _process_github_callback(code: str) -> str:
     client_id = os.getenv('GITHUB_CLIENT_ID')
     client_secret = os.getenv('GITHUB_CLIENT_SECRET')
     if not client_id or not client_secret:
         raise HTTPException(status_code=500, detail='GitHub OAuth environment variables are not configured')
+    
     token_response = httpx.post(
         'https://github.com/login/oauth/access_token',
         json={'client_id': client_id, 'client_secret': client_secret, 'code': code},
@@ -278,6 +336,7 @@ def github_callback(code: str | None = None) -> RedirectResponse:
     access_token = token_response.json().get('access_token')
     if not access_token:
         raise HTTPException(status_code=400, detail='GitHub did not return an access token')
+    
     user_response = httpx.get(
         'https://api.github.com/user',
         headers={'Authorization': f'Bearer {access_token}', 'Accept': 'application/vnd.github+json'},
@@ -288,51 +347,59 @@ def github_callback(code: str | None = None) -> RedirectResponse:
     login = user_data.get('login', 'github-user')
     avatar_url = user_data.get('avatar_url', '')
 
-    # Persist the GitHub token so the worker can use it later for PRs
-    init_db()
     with connection() as conn:
         existing = fetch_one(conn, 'select github_login from users where github_login=?', (login,))
         if existing:
             execute(conn, 'update users set github_token=?, avatar_url=?, updated_at=? where github_login=?', (access_token, avatar_url, time.time(), login))
         else:
             execute(conn, 'insert into users(github_login, github_token, avatar_url, updated_at) values(?,?,?,?)', (login, access_token, avatar_url, time.time()))
-    logger.info('Stored GitHub token for user %s', login)
+    
+    return login
 
+@app.get('/api/auth/github/callback')
+async def github_callback(code: str | None = None) -> RedirectResponse:
+    if not code:
+        raise HTTPException(status_code=400, detail='Missing GitHub OAuth code')
+    login = await asyncio.to_thread(_process_github_callback, code)
+    logger.info('Stored GitHub token for user %s', login)
     return RedirectResponse(f'{CLIENT_ORIGIN}/dashboard?github=connected&login={login}')
 
 
-@app.post('/api/repositories/import')
-def import_repository(req: ImportRequest) -> dict[str, object]:
+def _do_import_repository(req_url: str) -> dict[str, object]:
     if Repo is None:
         raise HTTPException(status_code=500, detail='GitPython is not installed')
-    init_db()
-    name = repo_name_from_url(req.url)
+    name = repo_name_from_url(req_url)
     repo_id = f'repo_{int(time.time() * 1000)}'
     local_path = WORKSPACE_ROOT / repo_id
     if local_path.exists():
         shutil.rmtree(local_path)
     try:
-        Repo.clone_from(req.url, local_path, depth=1)
+        Repo.clone_from(req_url, local_path, depth=1)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f'Clone failed: {exc}') from exc
 
     analysis = analyze_repository(local_path)
     with connection() as conn:
-        execute(conn, 'insert into repositories(id,url,name,framework,summary,languages,dependencies,local_path,imported_at) values(?,?,?,?,?,?,?,?,?)', (repo_id, req.url, name, analysis['framework'], analysis['summary'], json.dumps(analysis['languages']), json.dumps(analysis['dependencies']), str(local_path), time.time()))
-    return {'id': repo_id, 'name': name, 'url': req.url, **analysis, 'localPath': str(local_path), 'importedAt': time.time()}
+        execute(conn, 'insert into repositories(id,url,name,framework,summary,languages,dependencies,local_path,imported_at) values(?,?,?,?,?,?,?,?,?)', (repo_id, req_url, name, analysis['framework'], analysis['summary'], json.dumps(analysis['languages']), json.dumps(analysis['dependencies']), str(local_path), time.time()))
+    return {'id': repo_id, 'name': name, 'url': req_url, **analysis, 'localPath': str(local_path), 'importedAt': time.time()}
 
 
-@app.get('/api/repositories')
-def repositories() -> list[dict[str, object]]:
-    init_db()
+@app.post('/api/repositories/import')
+async def import_repository(req: ImportRequest) -> dict[str, object]:
+    return await asyncio.to_thread(_do_import_repository, req.url)
+
+
+def _get_repositories() -> list[dict[str, object]]:
     with connection() as conn:
         rows = fetch_all(conn, 'select id,url,name,framework,summary,languages,dependencies,local_path,imported_at from repositories order by imported_at desc')
     return [repository_to_dict(row) for row in rows]
 
+@app.get('/api/repositories')
+async def repositories() -> list[dict[str, object]]:
+    return await asyncio.to_thread(_get_repositories)
 
-@app.get('/api/dashboard')
-def dashboard() -> dict[str, object]:
-    init_db()
+
+def _get_dashboard() -> dict[str, object]:
     with connection() as conn:
         repo_count = fetch_all(conn, 'select count(*) from repositories')[0][0]
         task_count = fetch_all(conn, 'select count(*) from tasks')[0][0]
@@ -340,10 +407,17 @@ def dashboard() -> dict[str, object]:
         recent_tasks = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url from tasks order by created_at desc limit 5')
     return {'stats': {'repositories': repo_count, 'tasks': task_count}, 'repositories': [repository_to_dict(row) for row in recent_repositories], 'tasks': [task_to_dict(row) for row in recent_tasks]}
 
+@app.get('/api/dashboard')
+async def dashboard() -> dict[str, object]:
+    return await asyncio.to_thread(_get_dashboard)
+
+
+def _do_create_task(req_repo_id: str, req_prompt: str, task_id: str, status: str, plan: list[str], logs: list[str]) -> None:
+    with connection() as conn:
+        execute(conn, 'insert into tasks(id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url) values(?,?,?,?,?,?,?,?,?,?)', (task_id, req_repo_id, req_prompt, status, json.dumps(plan), json.dumps(logs), json.dumps([]), '', time.time(), ''))
 
 @app.post('/api/tasks')
 async def create_task(req: TaskRequest) -> dict[str, object]:
-    init_db()
     task_id = f'task_{int(time.time() * 1000)}'
     plan = ['Fetch issue context from GitHub', 'Analyze repository structure', 'Generate code fix with AI', 'Create branch and commit changes', 'Open pull request']
     logs = []
@@ -353,24 +427,25 @@ async def create_task(req: TaskRequest) -> dict[str, object]:
     else:
         logs.append('Task queued — the background worker will pick this up shortly.')
         status = 'queued'
-    with connection() as conn:
-        execute(conn, 'insert into tasks(id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url) values(?,?,?,?,?,?,?,?,?,?)', (task_id, req.repo_id, req.prompt, status, json.dumps(plan), json.dumps(logs), json.dumps([]), '', time.time(), ''))
+    
+    await asyncio.to_thread(_do_create_task, req.repo_id, req.prompt, task_id, status, plan, logs)
+    
     for log in logs:
         await sio.emit('task:log', {'task_id': task_id, 'message': log})
     return {'id': task_id, 'repoId': req.repo_id, 'title': req.prompt, 'status': status, 'plan': plan, 'logs': logs, 'filesChanged': [], 'prUrl': '', 'createdAt': time.time()}
 
 
-@app.get('/api/tasks')
-def tasks() -> list[dict[str, object]]:
-    init_db()
+def _get_tasks() -> list[dict[str, object]]:
     with connection() as conn:
         rows = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url from tasks order by created_at desc')
     return [task_to_dict(row) for row in rows]
 
+@app.get('/api/tasks')
+async def tasks() -> list[dict[str, object]]:
+    return await asyncio.to_thread(_get_tasks)
 
-@app.get('/api/architecture/{repo_id}')
-def architecture(repo_id: str) -> dict[str, object]:
-    init_db()
+
+def _get_architecture(repo_id: str) -> dict[str, object]:
     with connection() as conn:
         rows = fetch_all(conn, 'select local_path from repositories where id=?', (repo_id,))
     if not rows:
@@ -383,3 +458,7 @@ def architecture(repo_id: str) -> dict[str, object]:
         nodes.append({'id': node_id, 'label': path.name, 'type': 'folder' if path.is_dir() else 'file'})
         edges.append({'id': f'edge_{index}', 'source': 'root', 'target': node_id})
     return {'nodes': nodes, 'edges': edges}
+
+@app.get('/api/architecture/{repo_id}')
+async def architecture(repo_id: str) -> dict[str, object]:
+    return await asyncio.to_thread(_get_architecture, repo_id)

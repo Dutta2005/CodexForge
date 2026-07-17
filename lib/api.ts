@@ -61,6 +61,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   baseUrl: API_BASE_URL,
   health: () => request<BackendHealth>('/api/health'),
+  authMe: () => request<{ login: string; avatar_url: string } | null>('/api/auth/me'),
+  authLogout: () => request<{ status: string }>('/api/auth/logout', { method: 'POST' }),
   dashboard: () => request<BackendDashboard>('/api/dashboard'),
   listRepositories: () => request<BackendRepository[]>('/api/repositories'),
   importRepository: (url: string) => request<BackendRepository>('/api/repositories/import', { method: 'POST', body: JSON.stringify({ url }) }),

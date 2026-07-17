@@ -1,16 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { api, type BackendRepository, type BackendTask } from "@/lib/api";
 import { WorkspaceShell } from "@/components/workspace/shell";
+import { Terminal, Github, Play, CheckCircle2, CircleDashed, Cpu, ListTree, Info } from "lucide-react";
 
-const SOCKET_URL =
-  process.env.NEXT_PUBLIC_SOCKET_URL ??
-  process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000";
+const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function Tasks() {
   const [prompt, setPrompt] = useState("Fix Issue #12");
@@ -21,13 +20,13 @@ export default function Tasks() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingRepositories, setLoadingRepositories] = useState(true);
-  const [socketStatus, setSocketStatus] = useState<
-    "connecting" | "connected" | "error"
-  >("connecting");
+  const [socketStatus, setSocketStatus] = useState<"connecting" | "connected" | "error">("connecting");
+  const [hasPromptedInstall, setHasPromptedInstall] = useState(false);
+  
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-
     async function loadRepositories() {
       try {
         const nextRepositories = await api.listRepositories();
@@ -36,68 +35,71 @@ export default function Tasks() {
           setRepoId((current) => current || nextRepositories[0]?.id || "");
         }
       } catch (err) {
-        if (!cancelled)
-          setError(
-            err instanceof Error ? err.message : "Could not load repositories",
-          );
+        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load repositories");
       } finally {
         if (!cancelled) setLoadingRepositories(false);
       }
     }
-
     loadRepositories();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    const socket: Socket = io(SOCKET_URL, {
-      transports: ["websocket", "polling"],
-    });
-
+    const socket: Socket = io(SOCKET_URL, { transports: ["websocket", "polling"] });
     socket.on("connect", () => {
       setSocketStatus("connected");
-      setLogs((current) => [...current, `Socket connected: ${socket.id}`]);
+      setLogs((current) => [...current, `> System: Socket connected (${socket.id})`]);
     });
     socket.on("connect_error", (err) => {
       setSocketStatus("error");
-      setLogs((current) => [...current, `Socket error: ${err.message}`]);
+      setLogs((current) => [...current, `> System Error: Socket disconnected (${err.message})`]);
     });
     socket.on("task:log", (event: { task_id: string; message: string }) => {
-      setLogs((current) => [...current, `[${event.task_id}] ${event.message}`]);
+      setLogs((current) => [...current, `[${new Date().toLocaleTimeString()}] ${event.message}`]);
     });
-    socket.on(
-      "task:status",
-      (event: { task_id: string; status: string }) => {
-        setTask((current) =>
-          current && current.id === event.task_id
-            ? { ...current, status: event.status }
-            : current,
-        );
-      },
-    );
-
-    return () => {
-      socket.disconnect();
-    };
+    socket.on("task:status", (event: { task_id: string; status: string }) => {
+      setTask((current) => current && current.id === event.task_id ? { ...current, status: event.status } : current);
+    });
+    return () => { socket.disconnect(); };
   }, []);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
+
+  useEffect(() => {
+    if (task?.status === "failed" && !hasPromptedInstall) {
+      const hasPermissionError = logs.some(log => 
+        log.includes("Resource not accessible by integration") || 
+        log.includes("403") || 
+        log.includes("Permission denied") ||
+        log.includes("Not Found")
+      );
+      
+      if (hasPermissionError) {
+        setHasPromptedInstall(true);
+        const appName = process.env.NEXT_PUBLIC_GITHUB_APP_NAME;
+        const installUrl = appName 
+          ? `https://github.com/apps/${appName}/installations/new` 
+          : "https://github.com/settings/installations";
+        
+        window.open(installUrl, "_blank");
+      }
+    }
+  }, [task?.status, logs, hasPromptedInstall]);
 
   async function runTask() {
     try {
       setRunning(true);
       setError(null);
-      setLogs(["Submitting task to backend..."]);
+      setHasPromptedInstall(false);
+      setLogs([`> Starting task execution...`]);
       const selectedRepoId = repoId || repositories[0]?.id;
-      if (!selectedRepoId) {
-        throw new Error("Import a repository before running a task.");
-      }
+      if (!selectedRepoId) throw new Error("Import a repository before running a task.");
+      
       const createdTask = await api.createTask(selectedRepoId, prompt);
       setTask(createdTask);
-      setLogs((current) => [
-        ...current,
-        `Backend returned ${createdTask.status}: ${createdTask.title}`,
-      ]);
+      setLogs((current) => [...current, `> Backend recorded task ${createdTask.id} [${createdTask.status}]`]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Task failed");
     } finally {
@@ -107,141 +109,137 @@ export default function Tasks() {
 
   return (
     <WorkspaceShell>
-      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between mb-8">
         <div>
-          <h1 className="text-3xl font-semibold">AI Task Runner</h1>
-          <p className="mt-2 text-sm text-slate-400">
-            Submit a repository task, watch the event stream, and inspect the
-            backend response.
-          </p>
+          <h1 className="text-3xl font-bold tracking-tight">AI Task Runner</h1>
+          <p className="mt-1 text-sm text-slate-400">Execute autonomous coding agents on your repositories.</p>
         </div>
-        <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-300">
-          {loadingRepositories
-            ? "Loading repositories..."
-            : repositories.length
-              ? `${repositories.length} ${repositories.length === 1 ? "repository" : "repositories"} ready`
-              : "No repository selected"}
+        <div className="flex items-center gap-2">
+          <Badge variant={socketStatus === "connected" ? "success" : socketStatus === "error" ? "destructive" : "warning"}>
+            <div className={`mr-1.5 h-1.5 w-1.5 rounded-full ${socketStatus === "connected" ? "bg-emerald-500 animate-pulse" : "bg-current"}`} />
+            {socketStatus === "connected" ? "Live Stream Active" : socketStatus === "error" ? "Stream Offline" : "Connecting..."}
+          </Badge>
         </div>
       </div>
-      <p className="mt-2 text-sm text-slate-400">
-        API: {api.baseUrl} · Socket: {SOCKET_URL} ·{" "}
-        {socketStatus === "connected"
-          ? "Live stream connected"
-          : socketStatus === "error"
-            ? "Socket disconnected"
-            : "Connecting..."}
-      </p>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <Card>
-          <label className="text-sm text-slate-400" htmlFor="task-repo">
-            Repository
-          </label>
-          <select
-            id="task-repo"
-            value={repoId}
-            onChange={(event) => setRepoId(event.target.value)}
-            className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 p-3 outline-none"
-            disabled={loadingRepositories || repositories.length === 0}
-          >
-            {repositories.length === 0 && (
-              <option value="">Import a repository first</option>
+      <div className="grid gap-6 lg:grid-cols-12">
+        {/* Left Column: Config */}
+        <div className="lg:col-span-4 flex flex-col gap-6">
+          <Card>
+            <div className="flex items-center gap-2 mb-4 border-b border-forge-border pb-4">
+              <Cpu className="h-5 w-5 text-forge-accent" />
+              <h2 className="font-bold">Task Configuration</h2>
+            </div>
+            
+            <div className="mb-6 flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-400">
+              <Info className="h-4 w-4 shrink-0 mt-0.5" />
+              <p>
+                Ensure your GitHub App is <a href="https://github.com/settings/installations" target="_blank" rel="noreferrer" className="underline hover:text-amber-300">installed</a> on the selected repository with <strong>Workflows</strong>, <strong>Contents</strong>, and <strong>Pull requests</strong> permissions.
+              </p>
+            </div>
+            
+            <label className="text-sm font-medium text-slate-300 mb-2 block">Repository</label>
+            <select
+              className="flex h-10 w-full rounded-xl border border-forge-border bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-forge-accent disabled:opacity-50"
+              value={repoId}
+              onChange={(event) => setRepoId(event.target.value)}
+              disabled={loadingRepositories || repositories.length === 0}
+            >
+              {repositories.length === 0 && <option value="">Import a repository first</option>}
+              {repositories.map((repo) => (
+                <option key={repo.id} value={repo.id}>{repo.name}</option>
+              ))}
+            </select>
+
+            <label className="mt-5 text-sm font-medium text-slate-300 mb-2 block">Instruction Prompt</label>
+            <textarea
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              className="w-full rounded-xl border border-forge-border bg-black/30 p-3 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-forge-accent min-h-[120px] resize-y"
+              placeholder="E.g., Fix Issue #42 or Add authentication..."
+            />
+            
+            <Button 
+              className="w-full mt-4" 
+              disabled={running || !prompt || !repoId || repositories.length === 0} 
+              onClick={runTask}
+              loading={running}
+            >
+              <Play className="mr-2 h-4 w-4" />
+              Execute Task
+            </Button>
+            
+            {error && <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400">{error}</div>}
+          </Card>
+
+          <Card>
+            <div className="flex items-center gap-2 mb-4 border-b border-forge-border pb-4">
+              <ListTree className="h-5 w-5 text-forge-accent" />
+              <h2 className="font-bold">Execution Plan</h2>
+            </div>
+            {task?.plan ? (
+              <div className="relative pl-6 border-l border-forge-border/50 ml-3 space-y-6 py-2">
+                {task.plan.map((step, idx) => (
+                  <div key={idx} className="relative">
+                    <div className="absolute -left-[31px] flex h-6 w-6 items-center justify-center rounded-full bg-forge-surface ring-4 ring-forge-bg">
+                      <CheckCircle2 className="h-4 w-4 text-slate-500" />
+                    </div>
+                    <p className="text-sm font-medium text-slate-300">{step}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-6 text-center text-sm text-slate-500">
+                <CircleDashed className="mx-auto h-8 w-8 mb-2 opacity-20" />
+                Plan will generate when task runs.
+              </div>
             )}
-            {repositories.map((repository) => (
-              <option key={repository.id} value={repository.id}>
-                {repository.name}
-              </option>
-            ))}
-          </select>
+          </Card>
+        </div>
 
-          <label
-            className="mt-4 block text-sm text-slate-400"
-            htmlFor="task-prompt"
-          >
-            Task input
-          </label>
-          <textarea
-            id="task-prompt"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            className="mt-2 h-28 w-full rounded-xl border border-white/10 bg-black/30 p-4 outline-none"
-          />
-          <Button
-            disabled={
-              running || !prompt || !repoId || repositories.length === 0
-            }
-            onClick={runTask}
-          >
-            {running ? "Running..." : "Analyze & execute"}
-          </Button>
+        {/* Right Column: Execution */}
+        <div className="lg:col-span-8 flex flex-col gap-6">
+          <Card className="flex flex-col flex-1 min-h-[500px] overflow-hidden p-0 border-forge-border bg-[#050505]">
+            <div className="flex items-center justify-between border-b border-forge-border bg-forge-surface/50 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-mono text-slate-300">
+                <Terminal className="h-4 w-4 text-forge-accent" />
+                terminal // codex-worker
+              </div>
+              {task && (
+                <Badge variant={task.status === "finished" ? "success" : task.status === "running" ? "warning" : task.status === "failed" ? "destructive" : "default"}>
+                  {task.status.toUpperCase()}
+                </Badge>
+              )}
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4 font-mono text-[13px] leading-relaxed text-slate-300 space-y-1.5 h-[500px]">
+              {logs.length === 0 && <span className="text-slate-600">Waiting for logs...</span>}
+              {logs.map((log, index) => (
+                <div key={index} className={`${log.startsWith('>') ? 'text-forge-teal font-medium' : ''}`}>
+                  {log}
+                </div>
+              ))}
+              <div ref={logsEndRef} />
+            </div>
+          </Card>
 
-          <h2 className="mt-6 font-semibold">Backend plan</h2>
-          <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-slate-300">
-            {(
-              task?.plan ?? ["Submit a task to generate the backend plan."]
-            ).map((step) => (
-              <li key={step}>{step}</li>
-            ))}
-          </ol>
-          {!running && repositories.length === 0 && (
-            <p className="mt-3 rounded-xl bg-black/20 p-3 text-sm text-slate-400">
-              Import a repository first so the runner can point at real backend
-              data.
-            </p>
-          )}
-          {error && (
-            <p className="mt-3 rounded-xl border border-rose-400/30 bg-rose-400/10 p-3 text-sm text-rose-200">
-              {error}
-            </p>
-          )}
-        </Card>
-
-        <Card>
-          <h2 className="font-semibold">Live Execution</h2>
-          <div className="mt-4 min-h-52 rounded-xl bg-black p-4 font-mono text-sm text-emerald-300">
-            {logs.length === 0 && <p>$ Waiting for live logs...</p>}
-            {logs.map((log, index) => (
-              <p key={`${log}-${index}`}>$ {log}</p>
-            ))}
-          </div>
           {task?.prUrl && (
-            <div className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-              <h2 className="font-semibold text-emerald-300">✅ Pull Request Created</h2>
-              <a
-                href={task.prUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-2 inline-block text-sm text-emerald-400 underline hover:text-emerald-300 transition-colors"
-              >
-                {task.prUrl}
-              </a>
-            </div>
+            <Card className="border-emerald-500/30 bg-emerald-500/5 animate-slide-up">
+              <div className="flex items-start gap-4">
+                <div className="rounded-full bg-emerald-500/20 p-2 mt-1">
+                  <Github className="h-5 w-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-emerald-400 text-lg">Pull Request Created Successfully</h3>
+                  <p className="mt-1 text-sm text-slate-300 mb-3">The AI worker has committed changes and opened a pull request.</p>
+                  <a href={task.prUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-emerald-400">
+                    Review on GitHub
+                  </a>
+                </div>
+              </div>
+            </Card>
           )}
-          {task && (
-            <div className="mt-4 flex items-center gap-2">
-              <span className="text-sm text-slate-400">Status:</span>
-              <span
-                className={`rounded-full px-3 py-1 text-xs font-medium ${
-                  task.status === "finished"
-                    ? "bg-emerald-500/20 text-emerald-300"
-                    : task.status === "running"
-                      ? "bg-amber-500/20 text-amber-300 animate-pulse"
-                      : task.status === "failed"
-                        ? "bg-rose-500/20 text-rose-300"
-                        : "bg-blue-500/20 text-blue-300"
-                }`}
-              >
-                {task.status}
-              </span>
-            </div>
-          )}
-          <h2 className="mt-6 font-semibold">Backend response</h2>
-          <pre className="mt-2 overflow-auto rounded-xl bg-white/5 p-3 text-xs text-slate-300">
-            {task
-              ? JSON.stringify(task, null, 2)
-              : "Run a task to see the FastAPI response."}
-          </pre>
-        </Card>
+        </div>
       </div>
     </WorkspaceShell>
   );

@@ -26,8 +26,8 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger('codexforge.worker')
 
-POLL_INTERVAL_SECONDS = 5
-OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-4o')
+POLL_INTERVAL_SECONDS = 3
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-5')
 GITHUB_API = 'https://api.github.com'
 
 
@@ -99,18 +99,22 @@ class TaskWorker:
                 logger.exception('Unhandled error in worker poll loop')
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
-    async def _process_next_task(self) -> None:
-        """Pick one queued task and process it end-to-end."""
+    def _fetch_next_task_sync(self):
         with self._connection() as conn:
             rows = self._fetch_all(
                 conn,
                 'select id, repo_id, prompt from tasks where status=? order by created_at asc limit 1',
                 ('queued',),
             )
-        if not rows:
+        return rows[0] if rows else None
+
+    async def _process_next_task(self) -> None:
+        """Pick one queued task and process it end-to-end."""
+        row = await asyncio.to_thread(self._fetch_next_task_sync)
+        if not row:
             return
 
-        task_id, repo_id, prompt = rows[0]
+        task_id, repo_id, prompt = row
         logger.info('Picked up task %s for repo %s', task_id, repo_id)
 
         try:
@@ -126,12 +130,7 @@ class TaskWorker:
     # Core task execution
     # ------------------------------------------------------------------
 
-    async def _run_task(self, task_id: str, repo_id: str, prompt: str) -> None:
-        # 1. Mark running
-        await self._update_task(task_id, status='running')
-        await self._emit_log(task_id, 'Task picked up by worker — starting...')
-
-        # 2. Load repo metadata and find its GitHub token
+    def _get_repo_info_sync(self, repo_id: str) -> tuple[str, str] | None:
         with self._connection() as conn:
             repo_rows = self._fetch_all(
                 conn,
@@ -139,17 +138,28 @@ class TaskWorker:
                 (repo_id,),
             )
         if not repo_rows:
-            raise RuntimeError(f'Repository {repo_id} not found')
-
+            return None
         repo_url, github_token = repo_rows[0]
         if not github_token:
-            # Fallback: try to find any stored user token
             with self._connection() as conn:
                 user_rows = self._fetch_all(conn, 'select github_token from users order by updated_at desc limit 1')
             if user_rows and user_rows[0][0]:
                 github_token = user_rows[0][0]
-            else:
-                raise RuntimeError('No GitHub token available — please authenticate via GitHub OAuth first')
+        return repo_url, github_token
+
+    async def _run_task(self, task_id: str, repo_id: str, prompt: str) -> None:
+        # 1. Mark running
+        await self._update_task(task_id, status='running')
+        await self._emit_log(task_id, 'Task picked up by worker — starting...')
+
+        # 2. Load repo metadata and find its GitHub token
+        repo_info = await asyncio.to_thread(self._get_repo_info_sync, repo_id)
+        if not repo_info:
+            raise RuntimeError(f'Repository {repo_id} not found')
+        
+        repo_url, github_token = repo_info
+        if not github_token:
+            raise RuntimeError('No GitHub token available — please authenticate via GitHub OAuth first')
 
         owner_repo = _parse_owner_repo(repo_url)
         if not owner_repo:
@@ -439,7 +449,7 @@ Repository file tree:
                 {'role': 'system', 'content': system_prompt},
                 {'role': 'user', 'content': user_message},
             ],
-            temperature=0.2,
+            temperature=1.0,
             response_format={'type': 'json_object'},
         )
 
@@ -464,14 +474,13 @@ Repository file tree:
     # DB + Socket helpers
     # ------------------------------------------------------------------
 
-    async def _update_task(
+    def _update_task_sync(
         self,
         task_id: str,
-        *,
-        status: str | None = None,
-        log: str | None = None,
-        files_changed: list[str] | None = None,
-        pr_url: str | None = None,
+        status: str | None,
+        log: str | None,
+        files_changed: list[str] | None,
+        pr_url: str | None,
     ) -> None:
         with self._connection() as conn:
             if status:
@@ -487,6 +496,17 @@ Repository file tree:
                 self._execute(conn, 'update tasks set files_changed=? where id=?', (json.dumps(files_changed), task_id))
             if pr_url is not None:
                 self._execute(conn, 'update tasks set pr_url=? where id=?', (pr_url, task_id))
+
+    async def _update_task(
+        self,
+        task_id: str,
+        *,
+        status: str | None = None,
+        log: str | None = None,
+        files_changed: list[str] | None = None,
+        pr_url: str | None = None,
+    ) -> None:
+        await asyncio.to_thread(self._update_task_sync, task_id, status, log, files_changed, pr_url)
 
     async def _emit_log(self, task_id: str, message: str) -> None:
         logger.info('[%s] %s', task_id, message)
