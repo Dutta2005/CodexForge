@@ -3,6 +3,7 @@ node_modules
 .env.local
 .env
 .venv
+/backend/venv
 __pycache__
 .pytest_cache
 /data

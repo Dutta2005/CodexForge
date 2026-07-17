@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -18,6 +20,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+
+try:
     import psycopg
 except ImportError:  # pragma: no cover
     psycopg = None
@@ -27,11 +34,20 @@ try:
 except ImportError:  # pragma: no cover
     Repo = None
 
+from app.worker import TaskWorker
+
 DEFAULT_SQLITE_PATH = Path('/data/codexforge.sqlite3')
+
+if load_dotenv is not None:
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / '.env')
+
 DATABASE_URL = os.getenv('DB_URI') or os.getenv('DATABASE_URL') or str(DEFAULT_SQLITE_PATH)
 CLIENT_ORIGIN = os.getenv('CLIENT_ORIGIN', 'http://localhost:3000').rstrip('/')
 WORKSPACE_ROOT = Path(os.getenv('WORKSPACE_ROOT', '/data/repos'))
 CODEX_API_KEY = os.getenv('CODEX_API_KEY')
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
+logger = logging.getLogger('codexforge')
 
 app = FastAPI(title='CodexForge API')
 app.add_middleware(
@@ -85,9 +101,21 @@ def fetch_all(conn: object, sql: str, params: Sequence[object] = ()) -> list[tup
     return list(cursor.fetchall())
 
 
+def fetch_one(conn: object, sql: str, params: Sequence[object] = ()) -> tuple | None:
+    statement = sql.replace('?', '%s') if is_postgres() else sql
+    cursor = conn.execute(statement, params)  # type: ignore[attr-defined]
+    return cursor.fetchone()
+
+
 def add_column_if_missing(conn: object, table: str, column: str, definition: str) -> None:
     try:
-        execute(conn, f'alter table {table} add column {column} {definition}')
+        if is_postgres():
+            # PostgreSQL supports IF NOT EXISTS — avoids errors that abort the
+            # current transaction and roll back earlier successful DDL in the
+            # same transaction.
+            execute(conn, f'alter table {table} add column if not exists {column} {definition}')
+        else:
+            execute(conn, f'alter table {table} add column {column} {definition}')
     except Exception:
         # PostgreSQL aborts the current transaction after any SQL error, even if Python catches it.
         # Roll back so later migration statements can continue safely.
@@ -104,11 +132,14 @@ def init_db() -> None:
         add_column_if_missing(conn, 'repositories', 'dependencies', "text not null default '[]'")
         add_column_if_missing(conn, 'repositories', 'local_path', "text not null default ''")
         add_column_if_missing(conn, 'repositories', 'imported_at', 'real not null default 0')
+        add_column_if_missing(conn, 'repositories', 'github_token', "text not null default ''")
         execute(conn, 'create table if not exists tasks(id text primary key, repo_id text not null, prompt text not null, status text not null, created_at real not null)')
         add_column_if_missing(conn, 'tasks', 'plan', "text not null default '[]'")
         add_column_if_missing(conn, 'tasks', 'logs', "text not null default '[]'")
         add_column_if_missing(conn, 'tasks', 'files_changed', "text not null default '[]'")
         add_column_if_missing(conn, 'tasks', 'test_output', "text not null default ''")
+        add_column_if_missing(conn, 'tasks', 'pr_url', "text not null default ''")
+        execute(conn, 'create table if not exists users(github_login text primary key, github_token text not null, avatar_url text not null default \'\', updated_at real not null default 0)')
 
 
 def repo_name_from_url(url: str) -> str:
@@ -178,12 +209,23 @@ def task_to_dict(row: tuple) -> dict[str, object]:
     return {
         'id': row[0], 'repoId': row[1], 'title': row[2], 'status': row[3], 'plan': json.loads(row[4]),
         'logs': json.loads(row[5]), 'filesChanged': json.loads(row[6]), 'testOutput': row[7], 'createdAt': row[8],
+        'prUrl': row[9] if len(row) > 9 else '',
     }
 
 
 @app.on_event('startup')
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    if CODEX_API_KEY:
+        worker = TaskWorker(
+            sio=sio,
+            db_helpers={'connection': connection, 'execute': execute, 'fetch_all': fetch_all},
+            codex_api_key=CODEX_API_KEY,
+        )
+        await worker.start()
+        logger.info('Background task worker started')
+    else:
+        logger.warning('CODEX_API_KEY not set — background task worker will NOT start')
 
 
 
@@ -242,7 +284,20 @@ def github_callback(code: str | None = None) -> RedirectResponse:
         timeout=15,
     )
     user_response.raise_for_status()
-    login = user_response.json().get('login', 'github-user')
+    user_data = user_response.json()
+    login = user_data.get('login', 'github-user')
+    avatar_url = user_data.get('avatar_url', '')
+
+    # Persist the GitHub token so the worker can use it later for PRs
+    init_db()
+    with connection() as conn:
+        existing = fetch_one(conn, 'select github_login from users where github_login=?', (login,))
+        if existing:
+            execute(conn, 'update users set github_token=?, avatar_url=?, updated_at=? where github_login=?', (access_token, avatar_url, time.time(), login))
+        else:
+            execute(conn, 'insert into users(github_login, github_token, avatar_url, updated_at) values(?,?,?,?)', (login, access_token, avatar_url, time.time()))
+    logger.info('Stored GitHub token for user %s', login)
+
     return RedirectResponse(f'{CLIENT_ORIGIN}/dashboard?github=connected&login={login}')
 
 
@@ -282,7 +337,7 @@ def dashboard() -> dict[str, object]:
         repo_count = fetch_all(conn, 'select count(*) from repositories')[0][0]
         task_count = fetch_all(conn, 'select count(*) from tasks')[0][0]
         recent_repositories = fetch_all(conn, 'select id,url,name,framework,summary,languages,dependencies,local_path,imported_at from repositories order by imported_at desc limit 5')
-        recent_tasks = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at from tasks order by created_at desc limit 5')
+        recent_tasks = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url from tasks order by created_at desc limit 5')
     return {'stats': {'repositories': repo_count, 'tasks': task_count}, 'repositories': [repository_to_dict(row) for row in recent_repositories], 'tasks': [task_to_dict(row) for row in recent_tasks]}
 
 
@@ -290,26 +345,26 @@ def dashboard() -> dict[str, object]:
 async def create_task(req: TaskRequest) -> dict[str, object]:
     init_db()
     task_id = f'task_{int(time.time() * 1000)}'
-    plan = ['Inspect repository metadata', 'Search relevant files', 'Prepare execution notes', 'Report required manual/Codex action']
+    plan = ['Fetch issue context from GitHub', 'Analyze repository structure', 'Generate code fix with AI', 'Create branch and commit changes', 'Open pull request']
     logs = []
     if not CODEX_API_KEY:
-        logs.append('CODEX_API_KEY is not configured; task recorded but autonomous Codex execution was skipped.')
+        logs.append('CODEX_API_KEY is not configured; task recorded but autonomous execution was skipped.')
         status = 'failed'
     else:
-        logs.append('CODEX_API_KEY configured; queued for Codex execution worker integration.')
+        logs.append('Task queued — the background worker will pick this up shortly.')
         status = 'queued'
     with connection() as conn:
-        execute(conn, 'insert into tasks(id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at) values(?,?,?,?,?,?,?,?,?)', (task_id, req.repo_id, req.prompt, status, json.dumps(plan), json.dumps(logs), json.dumps([]), '', time.time()))
+        execute(conn, 'insert into tasks(id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url) values(?,?,?,?,?,?,?,?,?,?)', (task_id, req.repo_id, req.prompt, status, json.dumps(plan), json.dumps(logs), json.dumps([]), '', time.time(), ''))
     for log in logs:
         await sio.emit('task:log', {'task_id': task_id, 'message': log})
-    return {'id': task_id, 'repoId': req.repo_id, 'title': req.prompt, 'status': status, 'plan': plan, 'logs': logs, 'filesChanged': [], 'createdAt': time.time()}
+    return {'id': task_id, 'repoId': req.repo_id, 'title': req.prompt, 'status': status, 'plan': plan, 'logs': logs, 'filesChanged': [], 'prUrl': '', 'createdAt': time.time()}
 
 
 @app.get('/api/tasks')
 def tasks() -> list[dict[str, object]]:
     init_db()
     with connection() as conn:
-        rows = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at from tasks order by created_at desc')
+        rows = fetch_all(conn, 'select id,repo_id,prompt,status,plan,logs,files_changed,test_output,created_at,pr_url from tasks order by created_at desc')
     return [task_to_dict(row) for row in rows]
 
 

@@ -26,6 +26,7 @@ export type BackendTask = {
   logs: string[];
   filesChanged: string[];
   testOutput?: string;
+  prUrl?: string;
   createdAt: number;
 };
 
