@@ -49,7 +49,7 @@ export default function Settings() {
               <select className="flex h-10 w-full rounded-xl border border-forge-border bg-black/30 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-forge-accent">
                 <option>gpt-5 (Default)</option>
                 <option>gpt-5.1</option>
-                <option>claude-sonnet-4.5</option>
+                <option>gpt-4.1</option>
               </select>
             </div>
           </div>
