@@ -445,12 +445,100 @@ async def tasks() -> list[dict[str, object]]:
     return await asyncio.to_thread(_get_tasks)
 
 
+def _parse_owner_repo(url: str) -> tuple[str, str]:
+    """Extract (owner, repo_name) from a GitHub URL."""
+    parsed = urlparse(url)
+    parts = [p for p in parsed.path.strip('/').split('/') if p]
+    if len(parts) >= 2:
+        repo_name = parts[1].removesuffix('.git')
+        return parts[0], repo_name
+    raise ValueError(f'Cannot parse owner/repo from URL: {url}')
+
+
+def _get_architecture_from_github(url: str, repo_name: str) -> dict[str, object]:
+    """Fetch repo file tree from GitHub API — no local clone needed."""
+    owner, name = _parse_owner_repo(url)
+
+    # Get a GitHub token from the users table (if any) for higher rate limits
+    github_token = None
+    try:
+        with connection() as conn:
+            row = fetch_one(conn, 'select github_token from users order by updated_at desc limit 1')
+            if row and row[0]:
+                github_token = row[0]
+    except Exception:
+        pass
+
+    headers = {'Accept': 'application/vnd.github+json'}
+    if github_token:
+        headers['Authorization'] = f'Bearer {github_token}'
+
+    resp = httpx.get(
+        f'https://api.github.com/repos/{owner}/{name}/git/trees/HEAD?recursive=1',
+        headers=headers,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    tree_data = resp.json()
+
+    nodes = [{'id': 'root', 'label': repo_name, 'type': 'folder'}]
+    edges = []
+
+    # Build a set of directories and collect top-level entries
+    top_level_entries: list[dict[str, str]] = []
+    seen_dirs: set[str] = set()
+
+    for item in tree_data.get('tree', []):
+        path_str = item.get('path', '')
+        item_type = item.get('type', '')  # 'blob' or 'tree'
+
+        # Skip hidden files/dirs and nested entries for the top-level view
+        if '/' not in path_str and not path_str.startswith('.'):
+            entry_type = 'folder' if item_type == 'tree' else 'file'
+            top_level_entries.append({'name': path_str, 'type': entry_type})
+        elif '/' in path_str:
+            top_dir = path_str.split('/')[0]
+            if not top_dir.startswith('.'):
+                seen_dirs.add(top_dir)
+
+    # Merge: ensure top-level dirs from nested paths are included
+    existing_names = {e['name'] for e in top_level_entries}
+    for d in sorted(seen_dirs):
+        if d not in existing_names:
+            top_level_entries.append({'name': d, 'type': 'folder'})
+
+    # Sort: folders first, then files, alphabetically
+    top_level_entries.sort(key=lambda e: (0 if e['type'] == 'folder' else 1, e['name']))
+
+    for index, entry in enumerate(top_level_entries[:30], start=1):
+        node_id = f'node_{index}'
+        nodes.append({'id': node_id, 'label': entry['name'], 'type': entry['type']})
+        edges.append({'id': f'edge_{index}', 'source': 'root', 'target': node_id})
+
+    return {'nodes': nodes, 'edges': edges}
+
+
 def _get_architecture(repo_id: str) -> dict[str, object]:
     with connection() as conn:
-        rows = fetch_all(conn, 'select local_path from repositories where id=?', (repo_id,))
+        rows = fetch_all(conn, 'select url, name, local_path from repositories where id=?', (repo_id,))
     if not rows:
         raise HTTPException(status_code=404, detail='Repository not found')
-    root = Path(rows[0][0])
+
+    url = rows[0][0]
+    repo_name = rows[0][1]
+    local_path = rows[0][2]
+
+    # Try GitHub API first (works on ephemeral hosts like Render)
+    try:
+        return _get_architecture_from_github(url, repo_name)
+    except Exception as exc:
+        logger.warning('GitHub API tree fetch failed for %s: %s — falling back to local', repo_id, exc)
+
+    # Fallback to local filesystem if available
+    root = Path(local_path)
+    if not root.exists():
+        raise HTTPException(status_code=404, detail='Repository files not found. The cloned data may have been cleared on the server. Try re-importing the repository.')
+
     nodes = [{'id': 'root', 'label': root.name, 'type': 'folder'}]
     edges = []
     for index, path in enumerate([p for p in root.iterdir() if p.name != '.git'][:20], start=1):
@@ -458,6 +546,7 @@ def _get_architecture(repo_id: str) -> dict[str, object]:
         nodes.append({'id': node_id, 'label': path.name, 'type': 'folder' if path.is_dir() else 'file'})
         edges.append({'id': f'edge_{index}', 'source': 'root', 'target': node_id})
     return {'nodes': nodes, 'edges': edges}
+
 
 @app.get('/api/architecture/{repo_id}')
 async def architecture(repo_id: str) -> dict[str, object]:

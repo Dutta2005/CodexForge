@@ -1,131 +1,230 @@
 # CodexForge
 
-CodexForge is a production-oriented AI Engineering Workspace for importing GitHub repositories and using Codex Cloud-style automation to understand, modify, test, and improve codebases.
+> **Your Autonomous AI Engineering Workspace** — Import any GitHub repository and let AI understand, modify, test, and ship code for you.
 
-## Stack
+🔗 **Live Demo:** [codexforge-raj.vercel.app](https://codexforge-raj.vercel.app)
+🔗 **Backend API:** [codexforge.onrender.com](https://codexforge.onrender.com)
 
-- Next.js 16 App Router, React 19, TypeScript, Tailwind CSS, shadcn-style primitives, Framer Motion-ready UI
-- FastAPI, Python, GitPython, Socket.IO, SQLite
-- React Flow-ready architecture model, Monaco diff viewer, xterm.js-ready execution surface
+---
+
+## What is CodexForge?
+
+CodexForge is a full-stack AI engineering workspace that bridges the gap between your codebase and autonomous AI-powered development. Point it at any GitHub repository, describe the changes you want, and watch it analyze the architecture, generate code fixes, create branches, and open pull requests — all autonomously.
+
+## Tech Stack
+
+| Layer | Technologies |
+| --- | --- |
+| **Frontend** | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS, Framer Motion, Zustand |
+| **Backend** | FastAPI, Python, GitPython, Socket.IO, OpenAI API |
+| **Database** | PostgreSQL (Neon) |
+| **UI Components** | shadcn/ui-style primitives, Lucide Icons, React Flow, Monaco Editor |
+| **Deployment** | Vercel (frontend), Render (backend) |
 
 ## Features
 
-1. **Authentication**: GitHub OAuth entry point and session persistence surface.
-2. **Dashboard**: imported repositories, recent runs, task history, and statistics.
-3. **Repository import**: clone/analyze endpoint plus UI for package, framework, language, dependency, and architecture detection.
-4. **Architecture view**: interactive dependency graph model with folder, route, component, API, and database layers.
-5. **AI task runner**: issue prompt, editable plan, execution pipeline, streamed logs, modified files, tests, retries, and commit-message generation.
-6. **Live execution**: Socket.IO events for `Searching`, `Editing`, `Running Tests`, `Generating Commit`, and `Finished`.
-7. **Diff viewer**: Monaco-powered before/after diff component with accept/reject actions.
-8. **Testing**: result cards, coverage metadata, and retry-oriented task modeling.
-9. **Pull requests**: generated title, body, summary, and changed file metadata.
-10. **History**: timeline-ready runs with rollback snapshot affordances.
-11. **Settings**: GitHub, AI provider, theme, and preferences panels.
+### 🔐 GitHub OAuth Authentication
+- One-click "Continue with GitHub" login via OAuth.
+- Persistent session state managed with Zustand + `localStorage`.
+- Profile dashboard with your GitHub avatar, username, and live contribution graph.
 
-## Getting started
+### 📦 Smart Repository Import
+- Clone any public or private GitHub repository via URL.
+- **Monorepo-aware analysis** — recursively discovers every `package.json`, `requirements.txt`, `requirements.in`, and `pyproject.toml` across the entire project (skipping `node_modules`, `venv`, `.git`).
+- Multi-framework detection: correctly identifies combinations like **Next.js + FastAPI**, **React + Express + Hono**, **Vite + Django**, and more.
+- Auto-detects 15+ languages including TypeScript, Python, Go, Rust, Java, Ruby, PHP, C#, Prisma, and more.
+
+### 🤖 AI Task Runner
+- Describe any feature, bugfix, or refactor in natural language.
+- Autonomous pipeline: fetches GitHub issue context → analyzes the file tree → gathers key source files → generates code changes using advanced LLMs (GPT-5).
+- **Real-time streaming** of execution logs via Socket.IO directly into a styled terminal interface.
+- Visual execution plan stepper showing each phase of the autonomous workflow.
+
+### 🔀 End-to-End GitHub Integration
+- Automatically creates feature branches and commits AI-generated changes.
+- Opens pull requests with generated titles and descriptions.
+- **Smart permission detection** — if the GitHub App isn't installed on the target repository, the UI automatically opens the GitHub App installation page.
+
+### 🏗️ Architecture Explorer
+- Interactive React Flow graph visualizing the project file structure.
+- Glassmorphic node styling with zoom, pan, and drag support.
+
+### 📊 Dashboard
+- At-a-glance metrics: total repositories, total tasks.
+- Recent repositories and task history.
+- Animated loading skeletons for a polished data-loading experience.
+
+### ⚙️ Settings & History
+- GitHub App configuration panel.
+- AI provider and theme preferences.
+- Full task history with timeline view.
+
+## Repository Structure
+
+```
+CodexForge/
+├── app/                        # Next.js App Router pages
+│   ├── page.tsx                # Landing page
+│   ├── layout.tsx              # Root layout (Inter + JetBrains Mono fonts)
+│   ├── globals.css             # Design tokens & custom scrollbar styles
+│   ├── profile/                # Auth + profile dashboard (login/profile toggle)
+│   ├── dashboard/              # Stats, recent repos, recent tasks
+│   ├── repositories/           # Import & browse repositories
+│   ├── tasks/                  # AI task runner + diff viewer
+│   ├── architecture/           # React Flow graph explorer
+│   ├── history/                # Task history timeline
+│   └── settings/               # Configuration panels
+├── components/
+│   ├── ui/                     # Button, Card, Badge, Input, Skeleton
+│   └── workspace/              # Shell layout with responsive sidebar
+├── lib/
+│   ├── api.ts                  # Typed API client for all backend endpoints
+│   ├── store.ts                # Zustand auth store (persisted to localStorage)
+│   └── utils.ts                # Utility helpers (cn)
+├── backend/
+│   └── app/
+│       ├── main.py             # FastAPI app, Socket.IO, all API routes
+│       └── worker.py           # Async background task worker (OpenAI + GitHub)
+├── tailwind.config.ts          # Custom emerald/teal forge theme
+├── render.yaml                 # Render deployment blueprint
+├── docker-compose.yml          # Local Docker setup
+└── vitest.config.ts            # Test configuration
+```
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js 18+
+- Python 3.10+
+- A PostgreSQL database (e.g., [Neon](https://neon.tech) free tier)
+- A [GitHub OAuth App](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app) or [GitHub App](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps)
+- An OpenAI API key
+
+### Frontend
 
 ```bash
 npm install
 cp .env.example .env.local
+# Edit .env.local with your values
 npm run dev
 ```
 
-Backend:
+### Backend
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r backend/requirements.txt
-cp backend/.env.example backend/.env
-npm run backend:dev
+cd backend
+python -m venv venv
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+.\venv\Scripts\activate
+
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your database URL, GitHub OAuth, and OpenAI key
+uvicorn app.main:socket_app --reload --port 8000
 ```
 
-Docker:
+### Docker
 
 ```bash
 docker compose up --build
 ```
 
-## API
+## Environment Variables
 
-- `POST /api/auth/github/session` creates a mock GitHub session payload.
-- `POST /api/repositories/import` imports and analyzes a repository.
-- `GET /api/repositories` lists imported repositories.
-- `GET /api/architecture/{repo_id}` returns graph nodes and edges.
-- `POST /api/tasks` creates a Codex task and streams Socket.IO progress.
+### Frontend (`.env.local` or Vercel)
 
-## Repository layout
+| Variable | Description | Example |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_URL` | Backend API base URL | `http://localhost:8000` |
+| `NEXT_PUBLIC_SOCKET_URL` | Socket.IO backend URL | `http://localhost:8000` |
+| `NEXT_PUBLIC_APP_URL` | Frontend app URL | `http://localhost:3000` |
+| `NEXT_PUBLIC_GITHUB_APP_NAME` | (Optional) GitHub App slug for install redirects | `codexforge-app` |
 
-- `app/` Next.js routes and pages.
-- `components/` reusable UI and workspace shell components.
-- `lib/` typed API abstraction and mock data.
-- `types/` domain models.
-- `backend/` FastAPI application, database schema initialization, and Socket.IO server.
-- `sample-repository/` local fixture for import and analysis tests.
-- `__tests__/` unit tests for critical domain fixtures.
+### Backend (`backend/.env` or Render)
 
+| Variable | Description | Example |
+| --- | --- | --- |
+| `DB_URI` | PostgreSQL connection string | `postgresql://user:pass@host/db?sslmode=require` |
+| `CLIENT_ORIGIN` | Frontend URL for CORS/Socket.IO | `http://localhost:3000` |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App client ID | `Iv1.abc123...` |
+| `GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret | `abc123...` |
+| `GITHUB_OAUTH_CALLBACK_URL` | OAuth callback URL | `http://localhost:8000/api/auth/github/callback` |
+| `CODEX_API_KEY` | OpenAI API key | `sk-...` |
+| `WORKSPACE_ROOT` | Local path for cloned repos | `/data/repos` |
 
-## GitHub OAuth URL settings
+## API Reference
 
-There are two `.env.example` files because the Next.js frontend and FastAPI backend run as separate services. Use the root `.env.example` for local frontend/Vercel values and `backend/.env.example` for backend host values.
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/health` | Health check (database type, codex status) |
+| `GET` | `/api/auth/github/login` | Initiates GitHub OAuth flow |
+| `GET` | `/api/auth/github/callback` | Handles OAuth callback, stores token |
+| `GET` | `/api/auth/me` | Returns the currently authenticated user |
+| `POST` | `/api/auth/logout` | Clears the authenticated session |
+| `POST` | `/api/auth/github/session` | Returns GitHub OAuth configuration status |
+| `GET` | `/api/dashboard` | Aggregate stats, recent repos and tasks |
+| `GET` | `/api/repositories` | List all imported repositories |
+| `POST` | `/api/repositories/import` | Clone and analyze a GitHub repository |
+| `GET` | `/api/tasks` | List all tasks |
+| `POST` | `/api/tasks` | Create and queue an AI task |
+| `GET` | `/api/architecture/{repo_id}` | Get file structure graph for a repository |
 
-When creating a GitHub OAuth App, use these URLs:
+**Socket.IO Events:** `task:log` — streams real-time execution logs from the background worker to connected clients.
 
-### Local development
+## GitHub OAuth Setup
 
-- **Homepage URL**: `http://localhost:3000`
-- **Authorization callback URL**: `http://localhost:8000/api/auth/github/callback`
+When registering your GitHub OAuth App, use these URLs:
 
-### Production
+**Local Development:**
+- Homepage URL: `http://localhost:3000`
+- Authorization callback URL: `http://localhost:8000/api/auth/github/callback`
 
-- **Homepage URL**: your Vercel frontend URL, for example `https://codexforge.vercel.app`
-- **Authorization callback URL**: your deployed backend URL plus `/api/auth/github/callback`, for example `https://codexforge-backend.onrender.com/api/auth/github/callback`
+**Production:**
+- Homepage URL: `https://codexforge-raj.vercel.app`
+- Authorization callback URL: `https://codexforge.onrender.com/api/auth/github/callback`
 
-Set the same production callback URL as `GITHUB_OAUTH_CALLBACK_URL` on the backend host. Set `CLIENT_ORIGIN` to the Vercel frontend URL so CORS and Socket.IO accept browser requests.
+> **Important:** If you're using a GitHub App (not just an OAuth App) and want the AI to create branches and pull requests, make sure the App is **installed** on your target repository with **Contents**, **Pull Requests**, and **Workflows** permissions set to Read & Write.
 
-## Deploying the backend for free
+## Deployment
 
-The frontend is configured for Vercel, but the FastAPI backend needs its own host. The repo includes `render.yaml` for Render's free web-service tier.
+### Frontend → Vercel
 
+The frontend is deployed to Vercel. Set these environment variables in the Vercel dashboard:
 
-### Manual Render deploy settings
+```
+NEXT_PUBLIC_API_URL=https://codexforge.onrender.com
+NEXT_PUBLIC_SOCKET_URL=https://codexforge.onrender.com
+NEXT_PUBLIC_APP_URL=https://codexforge-raj.vercel.app
+```
 
-If Render Blueprints are unavailable on your plan, create a regular **New > Web Service** and use these settings:
+### Backend → Render
 
-- **Source**: `https://github.com/Dutta2005/CodexForge`
-- **Branch**: `main`
-- **Runtime / Language**: Docker
-- **Root directory**: `backend`
-- **Dockerfile path**: `Dockerfile` because the root directory is already `backend`
-- **Health check path**: `/api/health`
-- **Instance type**: Free
-- **Environment variables**: add `DB_URI`, `CLIENT_ORIGIN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `CODEX_API_KEY`, and `WORKSPACE_ROOT` in Render's Environment tab.
+The repo includes a `render.yaml` blueprint. To deploy manually:
 
-After Render creates the service, update `GITHUB_OAUTH_CALLBACK_URL` to `https://YOUR_RENDER_SERVICE.onrender.com/api/auth/github/callback` and update the GitHub OAuth App callback URL to the same value.
+1. Create a **New > Web Service** on [Render](https://render.com).
+2. Connect the GitHub repository.
+3. Set **Root Directory** to `backend`, **Runtime** to Docker.
+4. Add environment variables: `DB_URI`, `CLIENT_ORIGIN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_OAUTH_CALLBACK_URL`, `CODEX_API_KEY`, `WORKSPACE_ROOT`.
+5. Set **Health Check Path** to `/api/health`.
+6. Deploy.
 
-### Render backend steps
+After deployment, update `GITHUB_OAUTH_CALLBACK_URL` to `https://codexforge.onrender.com/api/auth/github/callback` and update the callback URL in your GitHub OAuth App settings to match.
 
-1. Create a Render account and choose **New > Blueprint**.
-2. Connect this GitHub repository and select `render.yaml`.
-3. Add these environment variables in Render:
-   - `DB_URI`: your hosted PostgreSQL connection string, such as a Neon pooled URL.
-   - `CLIENT_ORIGIN`: your deployed Vercel frontend URL, for example `https://your-app.vercel.app`.
-   - `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`: from a GitHub OAuth App.
-   - `CODEX_API_KEY`: from your AI/Codex provider dashboard.
-4. Deploy the service and copy the Render URL, for example `https://codexforge-backend.onrender.com`.
-5. In Vercel, set:
-   - `NEXT_PUBLIC_API_URL=https://codexforge-backend.onrender.com`
-   - `NEXT_PUBLIC_SOCKET_URL=https://codexforge-backend.onrender.com`
-6. Redeploy the Vercel frontend.
+> **Note:** Never commit real database URLs or API secrets. Keep those values in the hosting provider's environment variable UI.
 
-Never commit real database URLs or API secrets. Keep those values in the hosting provider's environment variable UI.
+## No Mock-Data Policy
 
-## No mock-data policy
+All primary product flows use real backend APIs:
 
-The primary product flows should use backend APIs, not frontend fixtures:
-
-- Repository import clones a real Git repository with GitPython and persists analysis in the configured database.
-- Dashboard, history, architecture, repositories, and tasks read from FastAPI endpoints.
-- Task creation records backend state and refuses to claim autonomous Codex execution when `CODEX_API_KEY` is missing.
+- Repository import clones a real Git repository with GitPython and persists analysis in PostgreSQL.
+- Dashboard, history, architecture, repositories, and tasks all read from FastAPI endpoints.
+- Task creation records backend state and refuses to claim autonomous execution when `CODEX_API_KEY` is missing.
 
 Remaining static text in the UI is explanatory copy only, not fake persisted product state.
+
+## License
+
+This project is built for the hackathon and is open source.
